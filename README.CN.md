@@ -1,142 +1,99 @@
-# compress-video 中文说明
+# 灵活的视频压缩脚本
 
-[![English](https://img.shields.io/badge/lang-English-blue.svg)](README.md) [![中文](https://img.shields.io/badge/lang-中文-brown.svg)](README.CN.md) ![cc-by-nc-nd](https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey.svg) [![GitHub stars](https://img.shields.io/github/stars/ktwu01/compress-video)](https://github.com/ktwu01/compress-video) [![GitHub forks](https://img.shields.io/github/forks/ktwu01/compress-video)](https://github.com/ktwu01/compress-video/fork)
+本项目提供了一套强大而灵活的 `bash` 视频压缩脚本，基于 `ffmpeg` 构建。其主要目标是提供智能的、基于场景的压缩方案，同时能保持原始宽高比并简化常见用例。
 
-> 🎓 本项目用于高效压缩大型视频文件，特别适用于 PhD 答辩、Zoom 录屏、在线课程等以静态画面为主的视频场景。可将 2GB 视频压缩至 200~500MB，同时保证语音清晰、画面可辨。
+项目的核心是一个通用的 `video_compress.sh` 脚本。其他脚本只是调用主脚本的快捷方式，为特定需求预设了参数。
 
----
+## 核心功能
 
-## 📦 项目简介
-
-该工具基于 [`ffmpeg`](https://ffmpeg.org/)，提供：
-
-- 简洁易用的单文件脚本（`compress_phd_defense.sh`）
-- 灵活可定制的批量压缩脚本（`compress_video.sh`）
-
-支持 macOS 和 Linux 平台，推荐使用 Homebrew 安装 ffmpeg。
+- **智能缩放**: 自动检测视频尺寸，并将其按比例缩小到指定的最大分辨率（如 1080p 或 720p），**同时保持原始宽高比**。不再有拉伸或扭曲的视频。
+- **模块化设计**: 单一、强大的 `video_compress.sh` 脚本作为引擎。特定用途的脚本（如 `academic_compress.sh` 和 `short_video_compress.sh`）作为简单易用的包装器。
+- **高度可定制**: 主脚本可通过命令行标志完全配置，允许您控制码率、帧率、分辨率、音频质量和编解码器。
+- **批量处理**: 所有脚本都会自动查找并处理当前目录下的所有 `MP4`、`MOV` 和 `MKV` 文件。
 
 ---
 
-## 📥 安装 ffmpeg
+## 快速入门：基于场景的脚本
 
+选择最适合您需求的脚本。所有压缩后的视频都保存在 `./compressed` 目录中。
+
+### 1. 学术与讲座视频压缩
+
+**使用场景:** 压缩博士答辩、Zoom 会议或讲座的录像。在这类视频中，屏幕上的文字和语音必须清晰，但高帧率的动态画面并不重要。
+
+此模式通过降低帧率来积极减小文件大小，这对于演示类视频非常有效。
+
+**脚本:** `./academic_compress.sh`
+
+**压缩逻辑:**
+- **分辨率**: 保持宽高比，将最长边缩小至最大 **1080p**。
+- **帧率**: **3 fps** (极大减小文件大小，对于幻灯片完全足够)。
+- **视频码率**: `500k` (为低帧率下的清晰度优化)。
+- **音频码率**: `64k` (确保语音清晰易懂)。
+
+**用法:**
+```bash
+./academic_compress.sh
+```
+
+### 2. 短视频压缩
+
+**使用场景:** 为社交媒体或分享压缩短视频片段，此时文件大小是首要任务，可以接受一定的质量损失。
+
+**脚本:** `./short_video_compress.sh`
+
+**压缩逻辑:**
+- **分辨率**: 保持宽高比，将最长边缩小至最大 **720p**。
+- **帧率**: **15 fps** (在保持基本流畅度的同时减小文件大小)。
+- **视频码率**: `500k` (为获得更小的文件而进行积极压缩)。
+- **音频码率**: `32k` (满足基本音频需求)。
+
+**用法:**
+```bash
+./short_video_compress.sh
+```
+
+---
+
+## 高级用法：通用的 `video_compress.sh`
+
+如果您需要更多控制，可以直接调用主脚本并传入自定义参数。这使您可以微调压缩的各个方面。
+
+### 工作原理
+
+脚本会在保持宽高比的同时计算新的尺寸。例如，使用 `--max-res 1080`：
+- `1920x1200` 的视频将变为 `1080x675`。
+- `1080x1920` (竖屏) 的视频将变为 `607x1080`。
+- `1280x720` 的视频将保持 `1280x720`，因为它未超过最大分辨率。
+
+### 可用参数
+
+- `-i, --input-dir`: 包含待处理视频的目录 (默认为 `.`)。
+- `-o, --output-dir`: 保存压缩文件的目录 (默认为 `./compressed`)。
+- `-r, --max-res`: 最长边的最大分辨率 (例如 `1080`, `720`)。
+- `-b, --video-bitrate`: 视频码率 (例如 `500k`, `1000k`)。
+- `-f, --framerate`: 视频帧率 (例如 `3`, `15`, `24`)。
+- `-a, --audio-bitrate`: 音频码率 (例如 `32k`, `64k`)。
+- `-x, --codec`: 视频编解码器 (`h264` 或 `h265`, 默认为 `h264`)。
+- `-n, --no-audio`: 设置为 `true` 以移除音轨。
+
+### 示例
+
+将 `~/videos` 目录中的所有视频压缩至最大 1080p 分辨率，并使用 H.265 编解码器以获得更高效率：
+
+```bash
+./video_compress.sh -i ~/videos -o ./output_folder -r 1080 -x h265
+```
+
+## 环境要求
+
+- **ffmpeg**: 必须已安装并在系统的 PATH 中可用。
+
+您可以通过 Homebrew 在 macOS 上安装它：
 ```bash
 brew install ffmpeg
-````
-
----
-
-## 🚀 快速开始
-
-### 1. 使用 `compress_phd_defense.sh` （快速压缩）
-
-适用于单个视频压缩，参数固定，适合新手。
-
+```
+或通过包管理器在 Linux 上安装：
 ```bash
-chmod +x compress_phd_defense.sh
-./compress_phd_defense.sh
+sudo apt update && sudo apt install ffmpeg
 ```
-
-会自动将 `input.mov` 压缩为 `output_compressed.mp4`。
-
----
-
-### 2. 使用 `compress_video.sh` （批量处理 + 自定义）
-
-适用于批量处理目录下所有视频，支持自定义码率、尺寸、是否保留音频等参数。
-
-示例：
-
-```bash
-chmod +x compress_video.sh
-
-# 压缩目录 ./zoom 中的所有视频，输出至 ./done，保留音频
-./compress_video.sh -i ./zoom -o ./done -b 900k -s 1280:720
-
-# 极限压缩，移除音频
-./compress_video.sh -i ./raw -o ./tiny -b 600k -s 1280:720 -n true
-```
-
-参数说明：
-
-| 参数   | 含义                           |
-| ---- | ---------------------------- |
-| `-i` | 输入目录（默认当前目录）                 |
-| `-o` | 输出目录（默认 `./compressed`）      |
-| `-b` | 视频码率，如 `800k`, `1000k`（越低越小） |
-| `-s` | 分辨率，如 `1280:720`, `854:480`  |
-| `-n` | 是否移除音频，设置为 `true` 可进一步压缩     |
-
----
-
-默认执行以下命令时：
-
-```bash
-./compress_video.sh
-```
-
-**输出的是 H.264 编码版本（兼容性最强）**，生成的文件名形如：
-
-```
-<原视频名>_compressed_h264.mp4
-```
-
----
-
-### ✅ 默认行为总结：
-
-| 项目   | 默认值                                 |
-| ---- | ----------------------------------- |
-| 视频编码 | `libx264`（即 H.264）                  |
-| 输出目录 | `./compressed/`                     |
-| 视频码率 | `1000k`                             |
-| 分辨率  | `1280x720`                          |
-| 音频处理 | 保留音频（AAC 64kbps）                    |
-| 适配平台 | ✅ 微信、QQ、Apple Photos、QuickTime 等都兼容 |
-
----
-
-### 若希望输出更小但兼容性较差的视频：
-
-你需要手动指定：
-
-```bash
-./compress_video.sh -x h265
-```
-
-这样会输出：
-
-```
-<原视频名>_compressed_h265.mp4
-```
-# 推荐：兼容微信 / Apple 系统的通用版本
-./compress_video.sh -i ./raw -o ./done -b 1000k -s 1280:720 -x h264
-
-# 极限压缩版本（需兼容性注意）
-./compress_video.sh -i ./raw -o ./tiny -b 600k -s 1280:720 -x h265 -n true
-
-## 🧪 压缩效果参考
-
-[参考来源](https://gist.github.com/lukehedger/277d136f68b028e22bed/)
-
-| 原始大小         | 参数              | 压缩后   | 效果   |
-| ------------ | --------------- | ----- | ---- |
-| 2.0GB（720p）  | `-b 1000k` + 音频 | 350MB | 保持清晰 |
-| 2.0GB（720p）  | `-b 700k` + 去音频 | 180MB | 可接受  |
-| 1.0GB（1080p） | `-b 600k` + 去音频 | 90MB  | 用于归档 |
-
----
-
-## 🔎 使用建议
-
-* 视频中如主要为 PPT 与语音解说，推荐关闭音频、降低帧率（如脚本中默认的 `15fps`）以获得最佳压缩比。
-* 输出为 `.mp4` 格式，兼容主流平台（Google Drive, YouTube, 腾讯文档）。
-
----
-
-## 🤝 欢迎贡献
-
-你可以帮助：
-
-* 改进默认参数
-* 添加图形界面（如 macOS Automator 支持）
-* 提交新的压缩预设方案（例如面向录播课程、电影、监控等不同类型视频）

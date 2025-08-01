@@ -1,39 +1,63 @@
 #!/usr/bin/env bash
 
-# 通用视频压缩脚本（支持 MOV/MP4/MKV），适合 Zoom/答辩视频
-# General-purpose video compression script for MOV/MP4/MKV, optimized for Zoom/lecture footage
+# Universal Video Compression Script
+#
+# This script intelligently compresses videos by scaling them while preserving the
+# original aspect ratio. It serves as the core engine for other specialized
+# compression scripts in this project.
 
+# --- Default Settings ---
 INPUT_DIR="."
 OUTPUT_DIR="./compressed"
-BITRATE="1000k"      # 视频码率 Video bitrate
-SCALE="1280:720"     # 缩放尺寸 Resize scale
-REMOVE_AUDIO=false   # 是否移除音频 Remove audio
-CODEC="h264"         # 编码格式: h264 (兼容性高), h265 (压缩更小)
+MAX_RES=""           # Max resolution (longest side), e.g., 1080, 720
+VIDEO_BITRATE="1000k"
+AUDIO_BITRATE="64k"
+FRAMERATE=""         # Frame rate, e.g., 3, 15, 24
+CODEC="h264"         # Codec: h264 (default), h265
+NO_AUDIO=false       # Set to true to remove audio
 
 usage() {
-  echo "Usage: $0 [-i input_dir] [-o output_dir] [-b bitrate] [-s scale] [-n remove_audio] [-x codec]"
-  echo "Example: $0 -i ./videos -o ./out -b 800k -s 1280:720 -x h265 -n true"
-  echo "Codec options: h264 (default), h265"
+  echo "Usage: $0 [options]"
+  echo ""
+  echo "A flexible video compression script that preserves aspect ratio."
+  echo ""
+  echo "Options:"
+  echo "  -i, --input-dir      Input directory (default: .)"
+  echo "  -o, --output-dir     Output directory (default: ./compressed)"
+  echo "  -r, --max-res        Max resolution for the longest side (e.g., 1080)"
+  echo "  -b, --video-bitrate  Video bitrate (e.g., 500k, 1000k)"
+  echo "  -f, --framerate      Video frame rate (e.g., 3, 15, 24)"
+  echo "  -a, --audio-bitrate  Audio bitrate (e.g., 32k, 64k)"
+  echo "  -x, --codec          Video codec (h264 or h265; default: h264)"
+  echo "  -n, --no-audio       Remove audio track (true or false)"
+  echo "  -h, --help           Display this help message"
   exit 1
 }
 
-while getopts "i:o:b:s:n:x:" opt; do
-  case $opt in
-    i) INPUT_DIR="$OPTARG" ;;
-    o) OUTPUT_DIR="$OPTARG" ;;
-    b) BITRATE="$OPTARG" ;;
-    s) SCALE="$OPTARG" ;;
-    n) REMOVE_AUDIO="$OPTARG" ;;
-    x) CODEC="$OPTARG" ;;
-    *) usage ;;
+# --- Argument Parsing ---
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    -i|--input-dir) INPUT_DIR="$2"; shift ;;
+    -o|--output-dir) OUTPUT_DIR="$2"; shift ;;
+    -r|--max-res) MAX_RES="$2"; shift ;;
+    -b|--video-bitrate) VIDEO_BITRATE="$2"; shift ;;
+    -f|--framerate) FRAMERATE="$2"; shift ;;
+    -a|--audio-bitrate) AUDIO_BITRATE="$2"; shift ;;
+    -x|--codec) CODEC="$2"; shift ;;
+    -n|--no-audio) NO_AUDIO="$2"; shift ;;
+    -h|--help) usage ;;
+    *) echo "Unknown parameter passed: $1"; usage ;;
   esac
+  shift
 done
 
-command -v ffmpeg >/dev/null || { echo "❌ ffmpeg not found."; exit 1; }
+# --- Pre-flight Checks ---
+command -v ffmpeg >/dev/null || { echo "❌ ffmpeg not found. Please install it first."; exit 1; }
+command -v ffprobe >/dev/null || { echo "❌ ffprobe not found. It is part of ffmpeg."; exit 1; }
 
 mkdir -p "$OUTPUT_DIR"
 
-# 根据编码器选择 ffmpeg 参数
+# --- Codec Selection ---
 if [ "$CODEC" = "h264" ]; then
   VCODEC="libx264"
 elif [ "$CODEC" = "h265" ]; then
@@ -43,20 +67,57 @@ else
   exit 1
 fi
 
-find "$INPUT_DIR" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" \) | while read -r file; do
+# --- Main Processing Loop ---
+find "$INPUT_DIR" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" \) -print0 | while IFS= read -r -d '' file; do
   base=$(basename "$file")
   name="${base%.*}"
-  out="$OUTPUT_DIR/${name}_compressed_${CODEC}.mp4"
+  out="$OUTPUT_DIR/${name}_compressed.mp4"
 
-  echo "🔄 Compressing: $file → $out"
+  echo "🔄 Processing: $file"
 
-  if [ "$REMOVE_AUDIO" = "true" ]; then
-    ffmpeg -i "$file" -vcodec "$VCODEC" -b:v "$BITRATE" -s "$SCALE" -an -y "$out"
-  else
-    ffmpeg -i "$file" -vcodec "$VCODEC" -b:v "$BITRATE" -s "$SCALE" -acodec aac -b:a 64k -y "$out"
+  # --- Build ffmpeg command ---
+  FFMPEG_CMD=("ffmpeg" "-i" "$file" "-y")
+
+  # Video Codec
+  FFMPEG_CMD+=("-vcodec" "$VCODEC" "-b:v" "$VIDEO_BITRATE")
+
+  # Smart Scaling Logic
+  if [[ -n "$MAX_RES" ]]; then
+    dimensions=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$file")
+    width=$(echo "$dimensions" | cut -d'x' -f1)
+    height=$(echo "$dimensions" | cut -d'x' -f2)
+
+    # Only scale down, never scale up
+    if (( width > MAX_RES || height > MAX_RES )); then
+      if (( width > height )); then
+        FFMPEG_CMD+=("-vf" "scale=$MAX_RES:-2")
+        echo "    Scaling to ${MAX_RES}px width (aspect ratio preserved)."
+      else
+        FFMPEG_CMD+=("-vf" "scale=-2:$MAX_RES")
+        echo "    Scaling to ${MAX_RES}px height (aspect ratio preserved)."
+      fi
+    else
+      echo "    Video is already within max resolution. No scaling."
+    fi
   fi
 
-  echo "✅ Done: $out"
+  # Frame Rate
+  if [[ -n "$FRAMERATE" ]]; then
+    FFMPEG_CMD+=("-r" "$FRAMERATE")
+  fi
+
+  # Audio Handling
+  if [ "$NO_AUDIO" = "true" ]; then
+    FFMPEG_CMD+=("-an")
+  else
+    FFMPEG_CMD+=("-acodec" "aac" "-b:a" "$AUDIO_BITRATE")
+  fi
+
+  FFMPEG_CMD+=("$out")
+
+  # Execute command
+  "${FFMPEG_CMD[@]}" >/dev/null 2>&1 && echo "✅ Compressed successfully: $out" || echo "❌ Failed to compress: $file"
+
 done
 
 echo "🎉 All videos processed. Output saved to: $OUTPUT_DIR"
