@@ -75,6 +75,15 @@ find "$INPUT_DIR" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" 
 
   echo "🔄 Processing: $file"
 
+  # --- Get Video Duration ---
+  duration_in_seconds=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file")
+  if [[ -z "$duration_in_seconds" ]] || ! [[ "$duration_in_seconds" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "❌ Could not get valid video duration for $file. Skipping."
+    continue
+  fi
+  # Use integer part of duration for calculation
+  total_duration_ms=${duration_in_seconds%.*}000000
+
   # --- Build ffmpeg command ---
   FFMPEG_CMD=("ffmpeg" "-i" "$file" "-y")
 
@@ -82,23 +91,34 @@ find "$INPUT_DIR" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" 
   FFMPEG_CMD+=("-vcodec" "$VCODEC" "-b:v" "$VIDEO_BITRATE")
 
   # Smart Scaling Logic
+  scale_info=""
   if [[ -n "$MAX_RES" ]]; then
     dimensions=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$file")
-    width=$(echo "$dimensions" | cut -d'x' -f1)
-    height=$(echo "$dimensions" | cut -d'x' -f2)
-
-    # Only scale down, never scale up
-    if (( width > MAX_RES || height > MAX_RES )); then
-      if (( width > height )); then
-        FFMPEG_CMD+=("-vf" "scale=$MAX_RES:-2")
-        echo "    Scaling to ${MAX_RES}px width (aspect ratio preserved)."
-      else
-        FFMPEG_CMD+=("-vf" "scale=-2:$MAX_RES")
-        echo "    Scaling to ${MAX_RES}px height (aspect ratio preserved)."
-      fi
+    if [[ -z "$dimensions" ]]; then
+      echo "❌ Could not get video dimensions for $file. Skipping scaling."
     else
-      echo "    Video is already within max resolution. No scaling."
+      width=$(echo "$dimensions" | cut -d'x' -f1)
+      height=$(echo "$dimensions" | cut -d'x' -f2)
+
+      # Validate width and height are numbers
+      if ! [[ "$width" =~ ^[0-9]+$ ]] || ! [[ "$height" =~ ^[0-9]+$ ]]; then
+        echo "❌ Invalid dimensions ($width x $height) for $file. Skipping scaling."
+      else
+        # Only scale down, never scale up
+        if (( width > MAX_RES || height > MAX_RES )); then
+          if (( width > height )); then
+            FFMPEG_CMD+=("-vf" "scale=$MAX_RES:-2")
+            scale_info="Scaling to ${MAX_RES}px width (aspect ratio preserved)."
+          else
+            FFMPEG_CMD+=("-vf" "scale=-2:$MAX_RES")
+            scale_info="Scaling to ${MAX_RES}px height (aspect ratio preserved)."
+          fi
+        else
+          scale_info="Video is already within max resolution. No scaling."
+        fi
+      fi
     fi
+    [[ -n "$scale_info" ]] && echo "    $scale_info"
   fi
 
   # Frame Rate
@@ -113,11 +133,59 @@ find "$INPUT_DIR" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" 
     FFMPEG_CMD+=("-acodec" "aac" "-b:a" "$AUDIO_BITRATE")
   fi
 
-  FFMPEG_CMD+=("$out")
+  # --- Progress Bar Setup ---
+  progress_file=$(mktemp)
+  FFMPEG_CMD+=("-progress" "$progress_file" "-nostats" "$out")
 
-  # Execute command
-  "${FFMPEG_CMD[@]}" >/dev/null 2>&1 && echo "✅ Compressed successfully: $out" || echo "❌ Failed to compress: $file"
+  # --- Execute and Monitor ---
+  "${FFMPEG_CMD[@]}" &
+  pid=$!
 
+  # Wait a moment for the progress file to be created
+  sleep 1
+
+  while kill -0 $pid 2>/dev/null; do
+    progress_time_us=$(grep "out_time_us=" "$progress_file" | tail -n1 | cut -d'=' -f2 || echo 0)
+    speed=$(grep "speed=" "$progress_file" | tail -n1 | cut -d'=' -f2 | sed 's/x//' || echo 1)
+
+    if [[ -n "$progress_time_us" && "$progress_time_us" -gt 0 ]]; then
+      percent=$(( progress_time_us * 100 / total_duration_ms ))
+      percent=$(( percent > 100 ? 100 : percent ))
+
+      # Calculate ETA
+      remaining_seconds=$(awk -v total="$duration_in_seconds" -v current="$((progress_time_us / 1000000))" -v spd="$speed" 'BEGIN { if (spd > 0) { print (total - current) / spd } else { print 0 } }')
+      eta=$(date -u -r ${remaining_seconds%.*} +%H:%M:%S)
+
+      # Draw progress bar
+      bar_length=30
+      completed_length=$(( bar_length * percent / 100 ))
+      remaining_length=$(( bar_length - completed_length ))
+      bar=$(printf "%${completed_length}s" "" | tr ' ' '█')
+      empty=$(printf "%${remaining_length}s" "")
+
+      printf "\r    [%s%s] %d%% | ETA: %s" "$bar" "$empty" "$percent" "$eta"
+    fi
+    sleep 0.5
+  done
+
+  wait $pid
+  exit_code=$?
+
+  # Clean up progress bar line
+  printf "\r%80s\r" ""
+
+  if [ $exit_code -eq 0 ]; then
+    echo "✅ Compressed successfully: $out"
+    # macOS specific notification
+    if [[ "$(uname)" == "Darwin" ]]; then
+      osascript -e "display notification \"Finished compressing ${base}\" with title \"Compression Complete\""
+      afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1
+    fi
+  else
+    echo "❌ Failed to compress: $file"
+  fi
+
+  rm "$progress_file"
 done
 
 echo "🎉 All videos processed. Output saved to: $OUTPUT_DIR"
