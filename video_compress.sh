@@ -75,17 +75,8 @@ find "$INPUT_DIR" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" 
 
   echo "🔄 Processing: $file"
 
-  # --- Get Video Duration ---
-  duration_in_seconds=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file")
-  if [[ -z "$duration_in_seconds" ]] || ! [[ "$duration_in_seconds" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-    echo "❌ Could not get valid video duration for $file. Skipping."
-    continue
-  fi
-  # Use integer part of duration for calculation
-  total_duration_ms=${duration_in_seconds%.*}000000
-
   # --- Build ffmpeg command ---
-  FFMPEG_CMD=("ffmpeg" "-i" "$file" "-y")
+  FFMPEG_CMD=("ffmpeg" "-nostdin" "-i" "$file" "-y")
 
   # Video Codec
   FFMPEG_CMD+=("-vcodec" "$VCODEC" "-b:v" "$VIDEO_BITRATE")
@@ -144,26 +135,46 @@ find "$INPUT_DIR" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" 
   # Wait a moment for the progress file to be created
   sleep 1
 
+  # --- Get Video Duration ---
+  duration_in_seconds=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$file")
+  if [[ -z "$duration_in_seconds" ]] || ! [[ "$duration_in_seconds" =~ ^[0-9]+(\.[0-9]+)?$ ]] || (( $(echo "$duration_in_seconds < 1" | bc -l) )); then
+    echo "⚠️ Could not get valid video duration or duration is less than 1s for $file. Skipping progress bar."
+    total_duration_ms=0
+  else
+    total_duration_ms=${duration_in_seconds%.*}000000
+  fi
+
   while kill -0 $pid 2>/dev/null; do
-    progress_time_us=$(grep "out_time_us=" "$progress_file" | tail -n1 | cut -d'=' -f2 || echo 0)
-    speed=$(grep "speed=" "$progress_file" | tail -n1 | cut -d'=' -f2 | sed 's/x//' || echo 1)
+    if [[ "$total_duration_ms" -gt 0 ]]; then
+      progress_time_us=$(grep "out_time_us=" "$progress_file" | tail -n1 | cut -d'=' -f2 || echo 0)
+      speed=$(grep "speed=" "$progress_file" | tail -n1 | cut -d'=' -f2 | sed 's/x//' || echo 1)
 
-    if [[ -n "$progress_time_us" && "$progress_time_us" -gt 0 ]]; then
-      percent=$(( progress_time_us * 100 / total_duration_ms ))
-      percent=$(( percent > 100 ? 100 : percent ))
+      # Validate progress_time_us is a valid number
+      if [[ "$progress_time_us" == "N/A" ]] || ! [[ "$progress_time_us" =~ ^[0-9]+$ ]]; then
+        progress_time_us=0
+      fi
 
-      # Calculate ETA
-      remaining_seconds=$(awk -v total="$duration_in_seconds" -v current="$((progress_time_us / 1000000))" -v spd="$speed" 'BEGIN { if (spd > 0) { print (total - current) / spd } else { print 0 } }')
-      eta=$(date -u -r ${remaining_seconds%.*} +%H:%M:%S)
+      if [[ -n "$progress_time_us" && "$progress_time_us" -gt 0 ]]; then
+        percent=$(( progress_time_us * 100 / total_duration_ms ))
+        percent=$(( percent > 100 ? 100 : percent ))
 
-      # Draw progress bar
-      bar_length=30
-      completed_length=$(( bar_length * percent / 100 ))
-      remaining_length=$(( bar_length - completed_length ))
-      bar=$(printf "%${completed_length}s" "" | tr ' ' '█')
-      empty=$(printf "%${remaining_length}s" "")
+        # Calculate ETA (handle N/A and invalid speed values)
+        if [[ "$speed" == "N/A" ]] || ! [[ "$speed" =~ ^[0-9]*\.?[0-9]+$ ]] || (( $(echo "$speed <= 0" | bc -l 2>/dev/null || echo 1) )); then
+          eta="--:--:--"
+        else
+          remaining_seconds=$(awk -v total="$duration_in_seconds" -v current="$((progress_time_us / 1000000))" -v spd="$speed" 'BEGIN { if (spd > 0) { print (total - current) / spd } else { print 0 } }')
+          eta=$(date -u -r ${remaining_seconds%.*} +%H:%M:%S 2>/dev/null || echo "--:--:--")
+        fi
 
-      printf "\r    [%s%s] %d%% | ETA: %s" "$bar" "$empty" "$percent" "$eta"
+        # Draw progress bar
+        bar_length=30
+        completed_length=$(( bar_length * percent / 100 ))
+        remaining_length=$(( bar_length - completed_length ))
+        bar=$(printf "%${completed_length}s" "" | tr ' ' '█')
+        empty=$(printf "%${remaining_length}s" "")
+
+        printf "\r    [%s%s] %d%% | ETA: %s" "$bar" "$empty" "$percent" "$eta"
+      fi
     fi
     sleep 0.5
   done
